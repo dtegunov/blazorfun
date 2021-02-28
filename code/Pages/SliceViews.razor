@@ -1,0 +1,137 @@
+﻿@page "/"
+@using Warp
+@using Warp.Tools
+@using Warp.Headers
+@using System.IO
+
+<h3>MRC volume slices</h3>
+
+<p>
+    <InputFile OnChange="@OnInputFileChange" />
+</p>
+
+@if (DimsVolume.X > 0)
+{
+    <div>
+        @DimsVolume.X, @DimsVolume.Y, @DimsVolume.Z
+    </div>
+
+    <div>
+        <button class="btn btn-primary" @onclick="DecZ">-</button>
+        @Pos.Z
+        <button class="btn btn-primary" @onclick="IncZ">+</button>
+    </div>
+
+    <div>
+        @if (Volume != null)
+        {
+            <img class="rounded m-1" src="@VolumeSlice" />
+        }
+    </div>
+}
+
+@code 
+{
+    int3 DimsVolume = new int3(0);
+    int3 Pos = new int3(0);
+
+    Image Volume;
+    string VolumeSlice;
+
+    private async Task OnInputFileChange(InputFileChangeEventArgs e)
+    {
+        var VolumeFile = e.File;
+        var buffers = new byte[VolumeFile.Size];
+        await VolumeFile.OpenReadStream(1 << 30).ReadAsync(buffers);
+
+        using (BinaryReader VolumeReader = new BinaryReader(new MemoryStream(buffers)))
+        {
+            MapHeader Header = MapHeader.ReadFromFile(VolumeReader, "dummy.mrc", new int2(1), 0, typeof(float));
+
+            VolumeReader.BaseStream.Seek(0, SeekOrigin.Begin);
+            float[][] Data = StreamMapReader.ReadMapFloat(VolumeReader, "dummy.mrc", new int2(1), 0, typeof(float), false);
+
+            DimsVolume = Header.Dimensions;
+            Pos = DimsVolume / 2;
+
+            Volume = new Image(Data, DimsVolume);
+
+            float[] VolumeData = Volume.GetHost(Intent.Read)[DimsVolume.Z / 2];
+            float Min = MathHelper.Min(VolumeData);
+            float Max = MathHelper.Max(VolumeData);
+            float Range = 1f / (Max - Min);
+            Volume.TransformValues(v => (v - Min) * Range);
+        }
+
+        VolumeSlice = DrawSlice();
+    }
+
+    private string DrawSlice()
+    {
+        float[] Slice = Volume.GetHost(Intent.Read)[Pos.Z];
+
+        using (MemoryStream outStream = new MemoryStream())
+        {
+            byte[] rgbBuffer = new byte[DimsVolume.Slice().Elements() * 3];
+            for (int y = 0; y < DimsVolume.Y; y++)
+            {
+                for (int x = 0; x < DimsVolume.X; x++)
+                {
+                    float4 Val = ScaleViridis.GetColor(Slice[y * DimsVolume.X + x]);
+
+                    rgbBuffer[(y * DimsVolume.X + x) * 3] = (byte)(Val.X * 255);
+                    rgbBuffer[(y * DimsVolume.X + x) * 3 + 1] = (byte)(Val.Y * 255);
+                    rgbBuffer[(y * DimsVolume.X + x) * 3 + 2] = (byte)(Val.Z * 255);
+                }
+            }
+
+            using (var img = SixLabors.ImageSharp.Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Rgb24>(rgbBuffer, DimsVolume.X, DimsVolume.Y))
+            {
+                img.Save(outStream, new SixLabors.ImageSharp.Formats.Bmp.BmpEncoder());
+            }
+
+            return "data:image/bmp;base64," + Convert.ToBase64String(outStream.ToArray());
+        }
+    }
+
+    private void DecZ()
+    {
+        Pos.Z = Math.Max(0, Math.Min(DimsVolume.Z - 1, Pos.Z - 1));
+
+        VolumeSlice = DrawSlice();
+    }
+
+    private void IncZ()
+    {
+        Pos.Z = Math.Max(0, Math.Min(DimsVolume.Z - 1, Pos.Z + 1));
+
+        VolumeSlice = DrawSlice();
+    }
+
+    private ColorScale ScaleViridis = new ColorScale((new[] { "#440154",
+                                                                "#481567",
+                                                                "#482677",
+                                                                "#453781",
+                                                                "#404788",
+                                                                "#39568C",
+                                                                "#33638D",
+                                                                "#2D708E",
+                                                                "#287D8E",
+                                                                "#238A8D",
+                                                                "#1F968B",
+                                                                "#20A387",
+                                                                "#29AF7F",
+                                                                "#3CBB75",
+                                                                "#55C667",
+                                                                "#73D055",
+                                                                "#95D840",
+                                                                "#B8DE29",
+                                                                "#DCE319",
+                                                                "#FDE725"}).Select(c =>
+                                                                {
+                                                                    return new float4(Convert.ToInt32(c.Substring(1, 2), 16) / 255f,
+                                                                                      Convert.ToInt32(c.Substring(3, 2), 16) / 255f,
+                                                                                      Convert.ToInt32(c.Substring(5, 2), 16) / 255f,
+                                                                                      1);
+                                                                }).ToArray());
+}
